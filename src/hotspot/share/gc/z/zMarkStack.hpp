@@ -35,12 +35,11 @@ private:
   ZStack<T, S>* _next;
   T             _slots[S];
 
-  bool is_full() const;
-
 public:
   ZStack();
 
   bool is_empty() const;
+  bool is_full() const;
 
   bool push(T value);
   bool pop(T& value);
@@ -74,17 +73,34 @@ using ZMarkStackMagazineList = ZStackList<ZMarkStackMagazine>;
 static_assert(sizeof(ZMarkStack) == ZMarkStackSize, "ZMarkStack size mismatch");
 static_assert(sizeof(ZMarkStackMagazine) <= ZMarkStackSize, "ZMarkStackMagazine size too large");
 
+class ZMarkStackAllocator;
+class ZMarkThreadLocalStacks;
+
+class ZFreeMarkStackClosure {
+private:
+  ZMarkThreadLocalStacks* _stacks;
+  ZMarkStackAllocator* _allocator;
+public:
+  ZFreeMarkStackClosure(ZMarkThreadLocalStacks* stacks, ZMarkStackAllocator* allocator);
+  void free_stack(ZMarkStack* stack);
+};
+
 class ZMarkStripe {
 private:
   ZCACHE_ALIGNED ZMarkStackList _published;
   ZCACHE_ALIGNED ZMarkStackList _overflowed;
+  ZCACHE_ALIGNED ZMarkStackList _nonfull;
+
+  void publish_full_stack(ZMarkStack* stack, bool publish);
+  void publish_nonfull_stack(ZFreeMarkStackClosure* cl, ZMarkStack* stack, bool publish);
 
 public:
   ZMarkStripe();
 
   bool is_empty() const;
 
-  void publish_stack(ZMarkStack* stack, bool publish = true);
+  template <bool flush>
+  void publish_stack(ZFreeMarkStackClosure* cl, ZMarkStack* stack, bool publish = true);
   ZMarkStack* steal_stack();
 };
 
@@ -109,15 +125,12 @@ public:
   ZMarkStripe* stripe_for_addr(uintptr_t addr);
 };
 
-class ZMarkStackAllocator;
-
 class ZMarkThreadLocalStacks {
 private:
   ZMarkStackMagazine* _magazine;
   ZMarkStack*         _stacks[ZMarkStripesMax];
 
   ZMarkStack* allocate_stack(ZMarkStackAllocator* allocator);
-  void free_stack(ZMarkStackAllocator* allocator, ZMarkStack* stack);
 
   bool push_slow(ZMarkStackAllocator* allocator,
                  ZMarkStripe* stripe,
@@ -153,6 +166,7 @@ public:
   bool flush(ZMarkStackAllocator* allocator,
              ZMarkStripeSet* stripes);
 
+  void free_stack(ZMarkStackAllocator* allocator, ZMarkStack* stack);
   void free(ZMarkStackAllocator* allocator);
 };
 

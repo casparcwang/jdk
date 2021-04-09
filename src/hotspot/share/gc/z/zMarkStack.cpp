@@ -37,6 +37,9 @@ ZMarkStripeSet::ZMarkStripeSet() :
     _nstripes_mask(0),
     _stripes() {}
 
+ZFreeMarkStackClosure::ZFreeMarkStackClosure(ZMarkThreadLocalStacks* stacks, ZMarkStackAllocator* allocator) :
+    _stacks(stacks), _allocator(allocator) {}
+
 void ZMarkStripeSet::set_nstripes(size_t nstripes) {
   assert(is_power_of_2(nstripes), "Must be a power of two");
   assert(is_power_of_2(ZMarkStripesMax), "Must be a power of two");
@@ -160,7 +163,8 @@ bool ZMarkThreadLocalStacks::push_slow(ZMarkStackAllocator* allocator,
     }
 
     // Publish/Overflow and uninstall stack
-    stripe->publish_stack(stack, publish);
+    ZFreeMarkStackClosure cl(this, allocator);
+    stripe->publish_stack<false>(&cl, stack, publish);
     *stackp = stack = NULL;
   }
 }
@@ -208,7 +212,8 @@ bool ZMarkThreadLocalStacks::flush(ZMarkStackAllocator* allocator, ZMarkStripeSe
     if (stack->is_empty()) {
       free_stack(allocator, stack);
     } else {
-      stripe->publish_stack(stack);
+      ZFreeMarkStackClosure cl(this, allocator);
+      stripe->publish_stack<true>(&cl, stack);
       flushed = true;
     }
     *stackp = NULL;

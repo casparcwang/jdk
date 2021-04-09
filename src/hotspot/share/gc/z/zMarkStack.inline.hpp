@@ -156,11 +156,15 @@ inline T* ZStackList<T>::pop() {
   }
 }
 
-inline bool ZMarkStripe::is_empty() const {
-  return _published.is_empty() && _overflowed.is_empty();
+inline void ZFreeMarkStackClosure::free_stack(ZMarkStack* stack) {
+  _stacks->free_stack(_allocator, stack);
 }
 
-inline void ZMarkStripe::publish_stack(ZMarkStack* stack, bool publish) {
+inline bool ZMarkStripe::is_empty() const {
+  return _published.is_empty() && _overflowed.is_empty() && _nonfull.is_empty();
+}
+
+inline void ZMarkStripe::publish_full_stack(ZMarkStack* stack, bool publish) {
   // A stack is published either on the published list or the overflowed
   // list. The published list is used by mutators publishing stacks for GC
   // workers to work on, while the overflowed list is used by GC workers
@@ -174,14 +178,58 @@ inline void ZMarkStripe::publish_stack(ZMarkStack* stack, bool publish) {
   }
 }
 
+inline void ZMarkStripe::publish_nonfull_stack(ZFreeMarkStackClosure* cl, ZMarkStack* stack, bool publish) {
+  while (true) {
+    ZMarkStack* prev = _nonfull.pop();
+    if (prev == NULL) {
+      assert(!stack->is_empty(), "Must have a non empty stack to push");
+      _nonfull.push(stack);
+      return;
+    }
+    while (!prev->is_full() && !stack->is_empty()) {
+      ZMarkStackEntry entry;
+      stack->pop(entry);
+      prev->push(entry);
+    }
+    if (!stack->is_empty()) {
+      // prev is full, stack still has elements
+      publish_full_stack(prev, publish);
+      continue;
+    }
+    // stack is empty
+    cl->free_stack(stack);
+    if (prev->is_full()) {
+      publish_full_stack(prev, publish);
+      return;
+    } else {
+      _nonfull.push(prev);
+      return;
+    }
+  }
+}
+
+template <bool flush>
+inline void ZMarkStripe::publish_stack(ZFreeMarkStackClosure* cl, ZMarkStack* stack, bool publish) {
+  if (flush && !stack->is_full()) {
+    publish_nonfull_stack(cl, stack, publish);
+  } else {
+    publish_full_stack(stack, publish);
+  }
+}
+
 inline ZMarkStack* ZMarkStripe::steal_stack() {
   // Steal overflowed stacks first, then published stacks
-  ZMarkStack* const stack = _overflowed.pop();
+  ZMarkStack* stack = _overflowed.pop();
   if (stack != NULL) {
     return stack;
   }
 
-  return _published.pop();
+  stack = _published.pop();
+  if (stack != NULL) {
+    return stack;
+  }
+
+  return _nonfull.pop();
 }
 
 inline size_t ZMarkStripeSet::nstripes() const {
